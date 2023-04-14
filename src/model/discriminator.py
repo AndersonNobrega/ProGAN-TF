@@ -2,14 +2,17 @@ import tensorflow as tf
 from tensorflow.keras import Model
 from tensorflow.keras.initializers import RandomNormal, Zeros
 from tensorflow.keras.layers import AveragePooling2D, Dense, LeakyReLU
+from tensorflow.keras.optimizers import Adam
 
 from .layer import Bias, ConvBlock, WSConv2d
 
 
 class Discriminator(Model):
-    def __init__(self, filters, **kwargs):
+    def __init__(self, filters, learning_rate, **kwargs):
         super(Discriminator, self).__init__(**kwargs)
         self._filters = filters
+        self._learning_rate = learning_rate
+        self._optimizer = Adam(learning_rate=self._learning_rate, beta_1=0, beta_2=0.99, epsilon=1e-8)
         self._final_rgb = WSConv2d(self._filters[0], kernel_size=1, strides=1, padding='valid')
         self._activation = LeakyReLU(0.2)
         self._prog_blocks = []
@@ -22,13 +25,21 @@ class Discriminator(Model):
         self._rgb_layers.append(self._final_rgb)
         self._avg_pool = AveragePooling2D(pool_size=2, strides=2)
 
-    def _final_block(self, inpt, filters):
-        output = WSConv2d(filters)(inpt)
-        output = Bias([output.shape[0], 1, 1, output.shape[-1]])(output)
+        # Layers to be used in the final block
+        self._conv_a = WSConv2d(filters[0])
+        self._conv_a_bias = Bias()
+        self._conv_b = WSConv2d(filters[0], kernel_size=4, padding='valid')
+        self._conv_b_bias = Bias()
+        self._dense = Dense(1, kernel_initializer=RandomNormal(), bias_initializer=Zeros(), activation='linear')
+
+    def _final_block(self, inpt):
+        output = self._conv_a(inpt)
+        output = self._conv_a_bias(output)
         output = self._activation(output)
-        output = WSConv2d(filters, kernel_size=4, padding='valid')(output)
+        output = self._conv_b(output)
+        output = self._conv_b_bias(output)
         output = self._activation(output)
-        output = Dense(1, kernel_initializer=RandomNormal(), bias_initializer=Zeros(), activation='linear')(output)
+        output = self._dense(output)
         return output
 
     def _fade_in(self, alpha, downscaled, output):
@@ -37,7 +48,7 @@ class Discriminator(Model):
     def mini_batch_std(self, inpt):
         batch_std = tf.math.reduce_std(inpt, axis=0, keepdims=True)
         batch_mean = tf.reduce_mean(batch_std, keepdims=True)
-        output = tf.tile(batch_mean, (inpt.shape[0], inpt.shape[1], inpt.shape[2], 1))
+        output = tf.tile(batch_mean, (tf.shape(inpt)[0], tf.shape(inpt)[1], tf.shape(inpt)[2], 1))
         return tf.concat([inpt, output], axis=-1)
 
     def call(self, inpt, alpha, steps):
@@ -56,7 +67,15 @@ class Discriminator(Model):
                 output = self._avg_pool(output)
 
         output = self.mini_batch_std(output)
-        return self._final_block(output, self._filters[0])
+        return self._final_block(output)
+
+    def loss(self, real_output, fake_output, grad_penalty, lambda_grad_penalty):
+        total_loss = (tf.reduce_mean(fake_output) - tf.reduce_mean(real_output)) + \
+                     (grad_penalty * lambda_grad_penalty) + (0.001 * tf.reduce_mean(real_output ** 2))
+        return total_loss
+
+    def optimizer(self):
+        return self._optimizer
 
     def get_config(self):
         raise NotImplementedError

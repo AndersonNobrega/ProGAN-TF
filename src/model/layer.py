@@ -22,7 +22,6 @@ class WSConv2d(Layer):
     def call(self, inpt, *args, **kwargs):
         scale = tf.cast(tf.sqrt(self._gain / (inpt.shape[-1] * (tf.square(self._kernel_size)))), tf.float32)
         output = self._conv_layer(inpt * scale)
-        self._conv_layer.get_weights()
         return output
 
 
@@ -49,11 +48,12 @@ class WSTransposedConv2d(Layer):
 
 
 class Bias(Layer):
-    def __init__(self, shape):
-        super(Bias, self).__init__()
-        self.shape = shape
-        self._config = {'shape': shape}
-        self.b = self.add_weight('bias', shape=shape, initializer=Zeros(), trainable=True)
+    def __init__(self, *args, **kwargs):
+        super(Bias, self).__init__(*args, **kwargs)
+        self.b = None
+
+    def build(self, input_shape):
+        self.b = self.add_weight('bias', shape=input_shape[1:], initializer=Zeros(), trainable=True)
 
     def call(self, inpt, *args, **kwargs):
         return inpt + self.b
@@ -72,19 +72,21 @@ class ConvBlock(Layer):
     def __init__(self, filters, pixel_norm=True, kernel=3, strides=1, gain=2):
         super(ConvBlock, self).__init__()
         self._conv_a = WSConv2d(filters, kernel, strides, 'same', gain)
+        self._conv_a_bias = Bias()
         self._conv_b = WSConv2d(filters, kernel, strides, 'same', gain)
+        self._conv_b_bias = Bias()
         self._activation = LeakyReLU(0.2)
         self._pixel_norm = PixelNorm()
         self._use_pixel_norm = pixel_norm
 
     def call(self, inputs, *args, **kwargs):
         output = self._conv_a(inputs)
-        output = self._activation(Bias([output.shape[0], 1, 1, output.shape[-1]])(output))
+        output = self._activation(self._conv_a_bias(output))
         if self._use_pixel_norm:
             output = self._pixel_norm(output)
 
         output = self._conv_b(output)
-        output = self._activation(Bias([output.shape[0], 1, 1, output.shape[-1]])(output))
+        output = self._activation(self._conv_b_bias(output))
         if self._use_pixel_norm:
             output = self._pixel_norm(output)
         return output
